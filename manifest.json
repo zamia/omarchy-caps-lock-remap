@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.zamia.caps-lock-remap",
+  "name": "Caps Lock Remap",
+  "version": "1.0.0",
+  "author": "Medal Huang",
+  "license": "MIT",
+  "description": "Pick what the Caps Lock key does from a bar menu: Control, Escape, Compose, plain Caps Lock, and more. Each choice says what it does and applies at once.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "Caps Lock Remap",
+    "description": "One click lists the Caps Lock mappings with a line on what each does. The choice applies at once and survives a restart.",
+    "category": "Input",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  },
+  "repository": "https://github.com/zamia/omarchy-caps-lock-remap"
+}
