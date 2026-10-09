@@ -62,14 +62,22 @@ var MAPPINGS = [
   }
 ]
 
+// The first row stands for "no mapping": an empty option means the widget
+// leaves Caps Lock to the user's own Hyprland config. Its detail line is
+// written by the panel, which knows what that config currently gives.
+var FOLLOW_CONFIG = { option: "", label: "Use my Hyprland config", detail: "" }
+
+function rows() {
+  return [FOLLOW_CONFIG].concat(MAPPINGS)
+}
+
 var SECTIONS = [
   { value: "left", label: "Left" },
   { value: "center", label: "Center" },
   { value: "right", label: "Right" }
 ]
 
-// Every XKB option that decides what the Caps Lock key does. Keep in sync
-// with caps_patterns in the Lua that capsremapctl generates.
+// Every XKB option that decides what the Caps Lock key does.
 var CAPS_PATTERNS = [
   /^caps:/,
   /^ctrl:[a-z_]*caps/,
@@ -84,15 +92,74 @@ function bindsCaps(option) {
   return false
 }
 
-// The option in a kb_options string that binds Caps Lock. An options string
-// with none of them leaves the key as XKB ships it, which is plain Caps Lock.
-function currentOption(kbOptions) {
+function tokens(kbOptions) {
+  var out = []
   var parts = String(kbOptions || "").split(",")
   for (var i = 0; i < parts.length; i++) {
     var option = parts[i].trim()
-    if (option !== "" && bindsCaps(option)) return option
+    if (option !== "") out.push(option)
   }
-  return "caps:capslock"
+  return out
+}
+
+function capsOptions(kbOptions) {
+  return tokens(kbOptions).filter(bindsCaps)
+}
+
+// The option in a kb_options string that binds Caps Lock. An options string
+// with none of them leaves the key as XKB ships it, which is plain Caps Lock.
+function currentOption(kbOptions) {
+  var caps = capsOptions(kbOptions)
+  return caps.length > 0 ? caps[0] : "caps:capslock"
+}
+
+function satisfies(kbOptions, mapping) {
+  var caps = capsOptions(kbOptions)
+  return caps.length === 1 && caps[0] === mapping
+}
+
+// kb_options with the Caps Lock binding swapped for `mapping`. Every other
+// option (layout switching and so on) is kept as it is.
+function withMapping(kbOptions, mapping) {
+  var kept = tokens(kbOptions).filter(function(option) { return !bindsCaps(option) })
+  kept.push(mapping)
+  return kept.join(",")
+}
+
+// The options string ends up inside a Lua string literal handed to
+// `hyprctl eval`, so anything beyond XKB's own alphabet is refused.
+function isSafe(kbOptions) {
+  return /^[A-Za-z0-9_:+,-]*$/.test(String(kbOptions))
+}
+
+// `hyprctl -j getoption input:kb_options` prints {"option":…,"str":…}.
+function parseOption(json) {
+  try {
+    var parsed = JSON.parse(String(json || ""))
+    return typeof parsed.str === "string" ? parsed.str : ""
+  } catch (e) {
+    return ""
+  }
+}
+
+// The mapping saved on this widget's entry in shell.json. Anything that is
+// not one of the offered options counts as no mapping at all; null means the
+// file could not be read as JSON, so the caller keeps what it had.
+function savedMapping(json, id) {
+  try {
+    var layout = JSON.parse(String(json || "")).bar.layout
+    for (var s = 0; s < SECTIONS.length; s++) {
+      var entries = layout[SECTIONS[s].value] || []
+      for (var i = 0; i < entries.length; i++) {
+        if (!entries[i] || entries[i].id !== id) continue
+        var option = String(entries[i].mapping || "")
+        return byOption(option) ? option : ""
+      }
+    }
+  } catch (e) {
+    return null
+  }
+  return ""
 }
 
 function byOption(option) {

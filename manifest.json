@@ -5,7 +5,7 @@
   "version": "1.0.0",
   "author": "Medal Huang",
   "license": "MIT",
-  "description": "Pick what the Caps Lock key does from a bar menu: Control, Escape, Compose, plain Caps Lock, and more. Each choice says what it does and applies at once.",
+  "description": "Pick what the Caps Lock key does from a bar menu: Control, Escape, Compose, plain Caps Lock, and more. Applies at once, without editing your Hyprland config.",
   "kinds": [
     "bar-widget"
   ],
@@ -14,10 +14,13 @@
   },
   "barWidget": {
     "displayName": "Caps Lock Remap",
-    "description": "One click lists the Caps Lock mappings with a line on what each does. The choice applies at once and survives a restart.",
+    "description": "One click lists the Caps Lock mappings with a line on what each does. The choice applies at once, survives a restart, and never edits your Hyprland config.",
     "category": "Input",
     "allowMultiple": false,
-    "defaultSection": "right"
+    "defaultSection": "right",
+    "defaults": {
+      "mapping": ""
+    }
   },
   "repository": "https://github.com/zamia/omarchy-caps-lock-remap"
 }

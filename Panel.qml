@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls
+import Quickshell
 import Quickshell.Hyprland
 import Quickshell.Io
 import qs.Commons
@@ -12,11 +13,29 @@ Panel {
   ipcTarget: "io.github.zamia.caps-lock-remap"
   manageIpc: false
 
-  // Hyprland's live kb_options string. The selected row is always derived
-  // from it, never from what was last clicked, so the panel also tells the
-  // truth when input.lua or another tool changes the mapping.
+  // The mapping this widget keeps in force: an XKB option, or "" to leave
+  // Caps Lock to the user's own Hyprland config. It is this bar entry's own
+  // setting in shell.json. No Hyprland config file is ever written — the
+  // option is set on the running compositor and set again whenever a config
+  // reload puts the user's own value back.
+  //
+  // It is read from shell.json directly rather than from the `settings` the
+  // bar injects. After a plugin rescan the bar rebuilds a widget with the
+  // settings it had when the bar was last laid out, and acting on those would
+  // quietly bring back an older mapping.
+  property string mapping: ""
+  property bool mappingLoaded: false
+
+  // Hyprland's live kb_options string. What the panel reports as "now" is
+  // always derived from it, never from what was last clicked.
   property string kbOptions: ""
   property string error: ""
+
+  // The options string last handed to Hyprland. Seeing it still unmet after
+  // the apply means Hyprland refused it, and asking again would only loop.
+  property string attempted: ""
+  property bool syncAgain: false
+  property bool reloadOnFollow: false
 
   // One cursor walks the mapping rows and then the bar-position row, whose
   // three chips get a cursor of their own for left/right.
@@ -28,30 +47,56 @@ Panel {
   readonly property color dim: Qt.darker(foreground, 1.55)
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
 
-  readonly property string controlPath: localPath(Qt.resolvedUrl("capsremapctl"))
-  readonly property var mappings: Model.MAPPINGS
+  readonly property var rows: Model.rows()
   readonly property string current: Model.currentOption(kbOptions)
-  readonly property int sectionRow: mappings.length
+  readonly property int sectionRow: rows.length
   readonly property string section: Model.sectionOf(bar ? bar.layoutConfig : null, moduleName)
+  readonly property string followDetail: mapping === ""
+    ? "Your own kb_options decide. Right now that gives: " + Model.labelFor(current)
+    : "Your own kb_options decide, and this widget changes nothing"
 
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
 
-  function localPath(url) {
-    var value = String(url || "")
-    if (value.indexOf("file://") === 0) value = value.substring(7)
-    try { return decodeURIComponent(value) } catch (e) { return value }
+  // Read the live options, then enforce the mapping against them.
+  function sync() {
+    if (statusProcess.running) { syncAgain = true; return }
+    statusProcess.running = true
   }
 
-  function refresh() {
-    if (!statusProcess.running) statusProcess.running = true
+  function enforce() {
+    if (!mappingLoaded) return
+    if (mapping === "" || Model.satisfies(kbOptions, mapping)) {
+      if (attempted !== "") error = ""
+      attempted = ""
+      return
+    }
+    if (applyProcess.running) return
+
+    var wanted = Model.withMapping(kbOptions, mapping)
+    if (!Model.isSafe(wanted)) {
+      error = "Your kb_options has characters this widget will not pass on, so it was left alone"
+      return
+    }
+    if (attempted === wanted) {
+      error = "Hyprland did not accept " + mapping
+      return
+    }
+    attempted = wanted
+    applyProcess.command = ["hyprctl", "eval", 'hl.config({ input = { kb_options = "' + wanted + '" } })']
+    applyProcess.running = true
   }
 
   function choose(option) {
-    if (setProcess.running || option === current) return
+    if (option === mapping) return
     error = ""
-    setProcess.command = [controlPath, "set", option]
-    setProcess.running = true
+    reloadOnFollow = option === ""
+    var shell = bar ? bar.shell : null
+    if (!shell || typeof shell.updateEntryInline !== "function"
+        || shell.updateEntryInline(moduleName, { id: moduleName, mapping: option }) === false) {
+      reloadOnFollow = false
+      error = "Could not save the choice to the bar settings"
+    }
   }
 
   // Moving rebuilds the widget in its new section, so the panel goes first.
@@ -69,7 +114,7 @@ Panel {
 
   function activateCursor() {
     if (cursorIndex === sectionRow) moveTo(Model.SECTIONS[sectionCursor].value)
-    else choose(mappings[cursorIndex].option)
+    else choose(rows[cursorIndex].option)
   }
 
   function sectionIndex() {
@@ -78,42 +123,78 @@ Panel {
     return 0
   }
 
+  function loadSaved(text) {
+    var saved = Model.savedMapping(text, moduleName)
+    if (saved !== null) mapping = saved
+    if (mappingLoaded) return
+    mappingLoaded = true
+    sync()
+  }
+
+  // Handing Caps Lock back means dropping the option this widget set, and
+  // the only way to learn the user's own value again is to re-read the config.
+  onMappingChanged: {
+    attempted = ""
+    if (mapping === "" && reloadOnFollow) {
+      reloadOnFollow = false
+      reloadProcess.running = true
+    } else {
+      sync()
+    }
+  }
+
   onOpenedChanged: {
     if (!opened) return
-    refresh()
-    error = ""
+    sync()
     cursorActive = false
     cursorIndex = 0
     sectionCursor = sectionIndex()
   }
 
-  Component.onCompleted: refresh()
+  Component.onCompleted: sync()
+
+  FileView {
+    path: Quickshell.env("HOME") + "/.config/omarchy/shell.json"
+    watchChanges: true
+    printErrors: false
+    onFileChanged: reload()
+    onLoaded: root.loadSaved(text())
+    onLoadFailed: if (!root.mappingLoaded) root.loadSaved("")
+  }
 
   Process {
     id: statusProcess
-    command: [root.controlPath, "status"]
+    command: ["hyprctl", "-j", "getoption", "input:kb_options"]
     stdout: StdioCollector { id: statusOut; waitForEnd: true }
     onExited: function(exitCode) {
-      if (exitCode === 0) root.kbOptions = statusOut.text.trim()
+      if (exitCode === 0) root.kbOptions = Model.parseOption(statusOut.text)
+      if (root.syncAgain) {
+        root.syncAgain = false
+        root.sync()
+      } else if (exitCode === 0) {
+        root.enforce()
+      }
     }
   }
 
   Process {
-    id: setProcess
-    stdout: StdioCollector { id: setOut; waitForEnd: true }
-    stderr: StdioCollector { id: setErr; waitForEnd: true }
-    onExited: function(exitCode) {
-      if (exitCode === 0) root.kbOptions = setOut.text.trim()
-      else root.error = setErr.text.trim() || "Could not change the mapping"
-    }
+    id: applyProcess
+    onExited: root.sync()
   }
 
-  // Any config reload can change the mapping: a hand edit to input.lua,
-  // OmaSettings, or this plugin's own write. Re-read on every one.
+  Process {
+    id: reloadProcess
+    command: ["hyprctl", "reload", "config-only"]
+  }
+
+  // A config reload puts the user's own kb_options back, whether it came
+  // from a hand edit, another tool, or this widget handing the key back.
   Connections {
     target: Hyprland
     function onRawEvent(event) {
-      if (event && event.name === "configreloaded") root.refresh()
+      if (!event || event.name !== "configreloaded") return
+      root.attempted = ""
+      root.sync()
     }
   }
 
@@ -124,9 +205,11 @@ Panel {
     function toggle(): void { root.toggle() }
     // Switch mapping without the menu, so a Hyprland bind or a script can
     // do it: `omarchy-shell io.github.zamia.caps-lock-remap set caps:escape`.
+    // `set config` hands the key back to the user's own config.
     function set(option: string): string {
-      if (!Model.byOption(option)) return "unknown mapping: " + option
-      root.choose(option)
+      var value = option === "config" ? "" : option
+      if (value !== "" && !Model.byOption(value)) return "unknown mapping: " + option
+      root.choose(value)
       return "ok"
     }
     function current(): string { return root.current }
@@ -149,7 +232,7 @@ Panel {
     open: root.opened
     focusTarget: keyCatcher
     contentWidth: panel.fittedContentWidth(Style.space(440))
-    contentHeight: panel.fittedContentHeight(column.implicitHeight, Style.space(720))
+    contentHeight: panel.fittedContentHeight(column.implicitHeight, Style.space(760))
 
     PanelKeyCatcher {
       id: keyCatcher
@@ -200,7 +283,7 @@ Panel {
           }
 
           Repeater {
-            model: root.mappings
+            model: root.rows
 
             CursorSurface {
               id: row
@@ -208,7 +291,7 @@ Panel {
               required property var modelData
               required property int index
 
-              readonly property bool selected: modelData.option === root.current
+              readonly property bool selected: modelData.option === root.mapping
 
               width: column.width
               height: Math.max(Style.space(42), rowText.implicitHeight + Style.space(14))
@@ -255,7 +338,7 @@ Panel {
                 }
                 Text {
                   width: parent.width
-                  text: modelData.detail
+                  text: modelData.option === "" ? root.followDetail : modelData.detail
                   wrapMode: Text.WordWrap
                   color: root.dim
                   font.family: root.fontFamily
